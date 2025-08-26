@@ -162,10 +162,8 @@ function startMCPServer() {
   console.error('[WHATSAPP-MCP] Starting MCP Server...');
   
   const serverPath = path.join(__dirname, 'whatsapp-mcp-server');
-  // Use virtual environment Python
-  const pythonCmd = path.join(serverPath, '.venv', 'bin', 'python');
-  const mcp = spawn(pythonCmd, ['main.py'], {
-    cwd: serverPath,
+  // Use uv run to properly manage Python environment (matches original repo)
+  const mcp = spawn('uv', ['--directory', serverPath, 'run', 'main.py'], {
     stdio: 'inherit' // Pass through stdio for MCP communication
   });
   

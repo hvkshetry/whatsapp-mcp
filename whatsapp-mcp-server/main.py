@@ -1,3 +1,21 @@
+"""
+WhatsApp MCP Server - Direct Python Implementation
+
+This MCP server provides WhatsApp functionality to Claude via the Model Context Protocol.
+It communicates with a Go bridge that handles the actual WhatsApp Web API connection.
+
+Architecture:
+- Python MCP Server (this file): Runs in WSL2, handles MCP protocol
+- Go Bridge (whatsapp-bridge/main.exe): Runs on Windows, connects to WhatsApp
+- Communication: HTTP REST API on localhost:8080
+
+Note: File sending tools (send_file, send_audio_message) have been removed due to 
+WSL/Windows path translation issues. The Python server runs in WSL but the Go bridge
+runs on Windows, making file path resolution problematic.
+
+Available Tools: 10 (originally 12, 2 removed)
+"""
+
 from typing import List, Dict, Any, Optional
 from dataclasses import asdict
 from mcp.server.fastmcp import FastMCP
@@ -11,8 +29,8 @@ from whatsapp import (
     get_last_interaction as whatsapp_get_last_interaction,
     get_message_context as whatsapp_get_message_context,
     send_message as whatsapp_send_message,
-    send_file as whatsapp_send_file,
-    send_audio_message as whatsapp_audio_voice_message,
+    # send_file as whatsapp_send_file,  # REMOVED: WSL/Windows path issues
+    # send_audio_message as whatsapp_audio_voice_message,  # REMOVED: WSL/Windows path issues
     download_media as whatsapp_download_media
 )
 
@@ -209,43 +227,9 @@ def send_message(
         "message": status_message
     }
 
-@mcp.tool()
-def send_file(recipient: str, media_path: str) -> Dict[str, Any]:
-    """Send a file such as a picture, raw audio, video or document via WhatsApp to the specified recipient. For group messages use the JID.
-    
-    Args:
-        recipient: The recipient - either a phone number with country code but no + or other symbols,
-                 or a JID (e.g., "123456789@s.whatsapp.net" or a group JID like "123456789@g.us")
-        media_path: The absolute path to the media file to send (image, video, document)
-    
-    Returns:
-        A dictionary containing success status and a status message
-    """
-    
-    # Call the whatsapp_send_file function
-    success, status_message = whatsapp_send_file(recipient, media_path)
-    return {
-        "success": success,
-        "message": status_message
-    }
-
-@mcp.tool()
-def send_audio_message(recipient: str, media_path: str) -> Dict[str, Any]:
-    """Send any audio file as a WhatsApp audio message to the specified recipient. For group messages use the JID. If it errors due to ffmpeg not being installed, use send_file instead.
-    
-    Args:
-        recipient: The recipient - either a phone number with country code but no + or other symbols,
-                 or a JID (e.g., "123456789@s.whatsapp.net" or a group JID like "123456789@g.us")
-        media_path: The absolute path to the audio file to send (will be converted to Opus .ogg if it's not a .ogg file)
-    
-    Returns:
-        A dictionary containing success status and a status message
-    """
-    success, status_message = whatsapp_audio_voice_message(recipient, media_path)
-    return {
-        "success": success,
-        "message": status_message
-    }
+# REMOVED: send_file and send_audio_message tools due to WSL/Windows path translation issues
+# These tools require file paths to cross the WSL/Windows boundary which causes errors
+# The Go bridge runs on Windows but the Python MCP server runs in WSL
 
 @mcp.tool()
 def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
