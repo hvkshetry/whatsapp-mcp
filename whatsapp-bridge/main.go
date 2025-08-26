@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -641,7 +643,7 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	}
 
 	// Download the media using whatsmeow client
-	mediaData, err := client.Download(downloader)
+	mediaData, err := client.Download(context.Background(), downloader)
 	if err != nil {
 		return false, "", "", "", fmt.Errorf("failed to download media: %v", err)
 	}
@@ -677,6 +679,58 @@ func extractDirectPathFromURL(url string) string {
 
 // Start a REST API server to expose the WhatsApp client functionality
 func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port int) {
+	// Handler for health check - always available
+	http.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		
+		status := "disconnected"
+		if client != nil && client.IsConnected() {
+			status = "connected"
+		}
+		
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": status,
+			"service": "whatsapp-bridge",
+			"version": "1.0.0",
+		})
+	})
+	
+	// Handler for manual reconnection
+	http.HandleFunc("/api/reconnect", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		
+		// Check if already connected
+		if client.IsConnected() {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": true,
+				"message": "Already connected to WhatsApp",
+			})
+			return
+		}
+		
+		// Check if reconnection is already in progress
+		if isReconnecting.Load() {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"message": "Reconnection already in progress",
+			})
+			return
+		}
+		
+		// Start reconnection in background
+		go func() {
+			logger := waLog.Stdout("Reconnect", "INFO", true)
+			reconnectWithBackoff(client, logger)
+		}()
+		
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"message": "Reconnection initiated",
+		})
+	})
+	
 	// Handler for sending messages
 	http.HandleFunc("/api/send", func(w http.ResponseWriter, r *http.Request) {
 		// Only allow POST requests
@@ -774,14 +828,95 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		})
 	})
 
-	// Start the server
-	serverAddr := fmt.Sprintf(":%d", port)
+	// Start the server - bind to all interfaces for WSL2 compatibility
+	serverAddr := fmt.Sprintf("0.0.0.0:%d", port)
 	fmt.Printf("Starting REST API server on %s...\n", serverAddr)
+	
+	// Log that REST server is about to start
+	fmt.Println("REST server started on port", port)
 
 	// Run server in a goroutine so it doesn't block
 	go func() {
+		fmt.Printf("Attempting to listen on %s...\n", serverAddr)
 		if err := http.ListenAndServe(serverAddr, nil); err != nil {
 			fmt.Printf("REST API server error: %v\n", err)
+		}
+	}()
+	
+	// Give the server a moment to start
+	time.Sleep(100 * time.Millisecond)
+	fmt.Println("REST API server should now be running")
+}
+
+// Global variables for reconnection management
+var (
+	reconnectMutex   sync.Mutex
+	isReconnecting   atomic.Bool
+	reconnectAttempt int
+	maxReconnectAttempts = 10
+)
+
+// reconnectWithBackoff attempts to reconnect with exponential backoff
+func reconnectWithBackoff(client *whatsmeow.Client, logger waLog.Logger) {
+	// Check if we're already reconnecting
+	if isReconnecting.Load() {
+		logger.Infof("Reconnection already in progress")
+		return
+	}
+
+	// Set reconnecting flag
+	isReconnecting.Store(true)
+	defer isReconnecting.Store(false)
+
+	reconnectMutex.Lock()
+	defer reconnectMutex.Unlock()
+
+	for reconnectAttempt < maxReconnectAttempts {
+		reconnectAttempt++
+		
+		// Calculate backoff time (exponential with max of 60 seconds)
+		backoff := time.Duration(math.Min(math.Pow(2, float64(reconnectAttempt-1)), 60)) * time.Second
+		logger.Infof("Reconnection attempt %d/%d (waiting %v)", reconnectAttempt, maxReconnectAttempts, backoff)
+		
+		// Wait before reconnecting
+		time.Sleep(backoff)
+		
+		// Check if already connected (might have reconnected via other means)
+		if client.IsConnected() {
+			logger.Infof("Already connected, skipping reconnection")
+			reconnectAttempt = 0
+			return
+		}
+		
+		// Attempt to reconnect
+		err := client.Connect()
+		if err != nil {
+			logger.Errorf("Reconnection attempt %d failed: %v", reconnectAttempt, err)
+			continue
+		}
+		
+		// Wait a moment to verify connection
+		time.Sleep(2 * time.Second)
+		
+		if client.IsConnected() {
+			logger.Infof("Successfully reconnected to WhatsApp!")
+			reconnectAttempt = 0
+			return
+		}
+	}
+	
+	logger.Errorf("Failed to reconnect after %d attempts", maxReconnectAttempts)
+}
+
+// startConnectionMonitor periodically checks connection status
+func startConnectionMonitor(client *whatsmeow.Client, logger waLog.Logger) {
+	ticker := time.NewTicker(30 * time.Second)
+	go func() {
+		for range ticker.C {
+			if !client.IsConnected() && !isReconnecting.Load() {
+				logger.Warnf("Connection lost detected by monitor, attempting reconnect...")
+				go reconnectWithBackoff(client, logger)
+			}
 		}
 	}()
 }
@@ -800,14 +935,14 @@ func main() {
 		return
 	}
 
-	container, err := sqlstore.New("sqlite3", "file:store/whatsapp.db?_foreign_keys=on", dbLog)
+	container, err := sqlstore.New(context.Background(), "sqlite3", "file:store/whatsapp.db?_foreign_keys=on", dbLog)
 	if err != nil {
 		logger.Errorf("Failed to connect to database: %v", err)
 		return
 	}
 
 	// Get device store - This contains session information
-	deviceStore, err := container.GetFirstDevice()
+	deviceStore, err := container.GetFirstDevice(context.Background())
 	if err != nil {
 		if err == sql.ErrNoRows {
 			// No device exists, create one
@@ -847,6 +982,13 @@ func main() {
 
 		case *events.Connected:
 			logger.Infof("Connected to WhatsApp")
+			// Reset reconnection attempt counter on successful connection
+			reconnectAttempt = 0
+
+		case *events.Disconnected:
+			logger.Warnf("Disconnected from WhatsApp")
+			// Attempt to reconnect automatically
+			go reconnectWithBackoff(client, logger)
 
 		case *events.LoggedOut:
 			logger.Warnf("Device logged out, please scan QR code to log in again")
@@ -898,15 +1040,20 @@ func main() {
 	// Wait a moment for connection to stabilize
 	time.Sleep(2 * time.Second)
 
-	if !client.IsConnected() {
-		logger.Errorf("Failed to establish stable connection")
-		return
-	}
-
-	fmt.Println("\n✓ Connected to WhatsApp! Type 'help' for commands.")
-
-	// Start REST API server
+	// Start REST API server immediately, even if not fully connected
+	// The API will handle connection status appropriately
+	fmt.Println("Starting REST API server...")
 	startRESTServer(client, messageStore, 8080)
+	
+	// Start connection monitor for automatic reconnection
+	startConnectionMonitor(client, logger)
+	
+	// Log connection status
+	if !client.IsConnected() {
+		logger.Warnf("WhatsApp client not fully connected yet - API started but some functions may not work until connection is established")
+	} else {
+		fmt.Println("\n✓ Connected to WhatsApp! Type 'help' for commands.")
+	}
 
 	// Create a channel to keep the main goroutine alive
 	exitChan := make(chan os.Signal, 1)
@@ -988,7 +1135,7 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 		logger.Infof("Getting name for contact: %s", chatJID)
 
 		// Just use contact info (full name)
-		contact, err := client.Store.Contacts.GetContact(jid)
+		contact, err := client.Store.Contacts.GetContact(context.Background(), jid)
 		if err == nil && contact.FullName != "" {
 			name = contact.FullName
 		} else if sender != "" {

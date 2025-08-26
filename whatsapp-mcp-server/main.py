@@ -1,4 +1,5 @@
 from typing import List, Dict, Any, Optional
+from dataclasses import asdict
 from mcp.server.fastmcp import FastMCP
 from whatsapp import (
     search_contacts as whatsapp_search_contacts,
@@ -26,7 +27,8 @@ def search_contacts(query: str) -> List[Dict[str, Any]]:
         query: Search term to match against contact names or phone numbers
     """
     contacts = whatsapp_search_contacts(query)
-    return contacts
+    # Convert Contact objects to dictionaries
+    return [asdict(contact) for contact in contacts]
 
 @mcp.tool()
 def list_messages(
@@ -67,7 +69,22 @@ def list_messages(
         context_before=context_before,
         context_after=context_after
     )
-    return messages
+    # Convert Message objects to dictionaries
+    result = []
+    import sys
+    for msg in messages:
+        print(f"DEBUG: Processing message of type {type(msg)}", file=sys.stderr)
+        if hasattr(msg, '__dict__') and hasattr(msg, '__dataclass_fields__'):
+            result.append(asdict(msg))
+        else:
+            # If it's not a dataclass, try to convert it to a dict
+            if isinstance(msg, dict):
+                result.append(msg)
+            else:
+                print(f"DEBUG: Skipping non-dataclass item: {msg}", file=sys.stderr)
+                # For now, return empty list if we get unexpected data
+                return []
+    return result
 
 @mcp.tool()
 def list_chats(
@@ -93,7 +110,8 @@ def list_chats(
         include_last_message=include_last_message,
         sort_by=sort_by
     )
-    return chats
+    # Convert Chat objects to dictionaries
+    return [asdict(chat) for chat in chats]
 
 @mcp.tool()
 def get_chat(chat_jid: str, include_last_message: bool = True) -> Dict[str, Any]:
@@ -104,7 +122,8 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Dict[str, Any]
         include_last_message: Whether to include the last message (default True)
     """
     chat = whatsapp_get_chat(chat_jid, include_last_message)
-    return chat
+    # Convert Chat object to dictionary
+    return asdict(chat) if chat else None
 
 @mcp.tool()
 def get_direct_chat_by_contact(sender_phone_number: str) -> Dict[str, Any]:
@@ -114,7 +133,8 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Dict[str, Any]:
         sender_phone_number: The phone number to search for
     """
     chat = whatsapp_get_direct_chat_by_contact(sender_phone_number)
-    return chat
+    # Convert Chat object to dictionary
+    return asdict(chat) if chat else None
 
 @mcp.tool()
 def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Dict[str, Any]]:
@@ -126,7 +146,8 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Dict[str
         page: Page number for pagination (default 0)
     """
     chats = whatsapp_get_contact_chats(jid, limit, page)
-    return chats
+    # Convert Chat objects to dictionaries
+    return [asdict(chat) for chat in chats]
 
 @mcp.tool()
 def get_last_interaction(jid: str) -> str:
@@ -152,6 +173,11 @@ def get_message_context(
         after: Number of messages to include after the target message (default 5)
     """
     context = whatsapp_get_message_context(message_id, before, after)
+    # Convert MessageContext dataclass to dictionary
+    if hasattr(context, '__dict__'):
+        context_dict = asdict(context)
+        # The before, message, and after fields contain Message objects that are already converted
+        return context_dict
     return context
 
 @mcp.tool()

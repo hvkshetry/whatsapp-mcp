@@ -1,10 +1,17 @@
 # WhatsApp MCP Server
 
-This is a Model Context Protocol (MCP) server for WhatsApp.
+This is a Model Context Protocol (MCP) server for WhatsApp. **Fork with enhanced WSL2 support and automatic reconnection.**
 
 With this you can search and read your personal Whatsapp messages (including images, videos, documents, and audio messages), search your contacts and send messages to either individuals or groups. You can also send media files including images, videos, documents, and audio messages.
 
 It connects to your **personal WhatsApp account** directly via the Whatsapp web multidevice API (using the [whatsmeow](https://github.com/tulir/whatsmeow) library). All your messages are stored locally in a SQLite database and only sent to an LLM (such as Claude) when the agent accesses them through tools (which you control).
+
+## Key Enhancements in This Fork
+- ✅ **Automatic reconnection** with exponential backoff when WhatsApp disconnects
+- ✅ **WSL2 support** with proper Windows/Linux boundary handling
+- ✅ **Intelligent bridge reuse** - MCP wrapper detects and reuses existing WhatsApp connections
+- ✅ **Optimized startup** - Uses compiled binary for faster initialization
+- ✅ **Connection monitoring** - Health checks every 30 seconds with auto-recovery
 
 Here's an example of what you can do when it's connected to Claude.
 
@@ -179,3 +186,21 @@ By default, just the metadata of the media is stored in the local database. The 
 - **WhatsApp Out of Sync**: If your WhatsApp messages get out of sync with the bridge, delete both database files (`whatsapp-bridge/store/messages.db` and `whatsapp-bridge/store/whatsapp.db`) and restart the bridge to re-authenticate.
 
 For additional Claude Desktop integration troubleshooting, see the [MCP documentation](https://modelcontextprotocol.io/quickstart/server#claude-for-desktop-integration-issues). The documentation includes helpful tips for checking logs and resolving common issues.
+
+## Known Issues
+
+### Current Limitations (as of August 2025)
+
+1. **File Sending Path Issue (WSL2)**: The `send_file` and `send_audio_message` tools currently have path resolution issues when running in WSL2. The Go bridge running on Windows cannot properly resolve file paths provided from the WSL environment.
+
+2. **JSON Serialization in list_messages**: The `list_messages` tool returns concatenated JSON objects instead of a proper JSON array when multiple messages are retrieved. This causes parsing issues for consumers expecting valid JSON arrays.
+
+3. **Media Download Filename Conflicts**: When downloading multiple media files from the same time period, files may overwrite each other due to timestamp-based naming.
+
+### Tested and Working Tools (9/12)
+✅ search_contacts, list_chats, get_chat, get_direct_chat_by_contact, get_contact_chats, get_last_interaction, get_message_context, send_message, download_media
+
+### Tools with Issues (3/12)
+❌ list_messages (JSON format), send_file (path resolution), send_audio_message (path resolution)
+
+These issues are being actively investigated. Contributions and pull requests are welcome!

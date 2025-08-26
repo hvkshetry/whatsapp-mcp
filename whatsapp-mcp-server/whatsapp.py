@@ -6,9 +6,50 @@ import os.path
 import requests
 import json
 import audio
+import platform
+import re
+
+def get_windows_host_ip():
+    """Detect Windows host IP when running in WSL2"""
+    import subprocess
+    
+    if platform.system() == 'Linux' and os.path.exists('/proc/sys/fs/binfmt_misc/WSLInterop'):
+        # Try to get the default gateway which is the Windows host
+        try:
+            result = subprocess.run(['ip', 'route', 'show'], capture_output=True, text=True, timeout=2)
+            for line in result.stdout.splitlines():
+                if 'default' in line:
+                    parts = line.split()
+                    if len(parts) > 2:
+                        gateway = parts[2]
+                        if re.match(r'^\d+\.\d+\.\d+\.\d+$', gateway):
+                            print(f"[WHATSAPP-MCP] Detected WSL2, using Windows host IP: {gateway}")
+                            return gateway
+        except:
+            pass
+        
+        # Fallback to common WSL2 host IPs
+        fallback_ips = ['172.30.48.1', '172.31.240.1', '172.28.0.1']
+        for ip in fallback_ips:
+            try:
+                # Test if we can connect to this IP on port 8080
+                import socket
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(1)
+                result = sock.connect_ex((ip, 8080))
+                sock.close()
+                if result == 0:
+                    print(f"[WHATSAPP-MCP] Detected WSL2, using Windows host IP: {ip}")
+                    return ip
+            except:
+                pass
+        
+        print("[WHATSAPP-MCP] Could not detect Windows host IP, using localhost")
+    return 'localhost'
 
 MESSAGES_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'messages.db')
-WHATSAPP_API_BASE_URL = "http://localhost:8080/api"
+WHATSAPP_BRIDGE_HOST = get_windows_host_ip()
+WHATSAPP_API_BASE_URL = f"http://{WHATSAPP_BRIDGE_HOST}:8080/api"
 
 @dataclass
 class Message:
@@ -210,10 +251,10 @@ def list_messages(
                 messages_with_context.append(context.message)
                 messages_with_context.extend(context.after)
             
-            return format_messages_list(messages_with_context, show_chat_info=True)
+            return messages_with_context
             
-        # Format and display messages without context
-        return format_messages_list(result, show_chat_info=True)    
+        # Return messages without context
+        return result    
         
     except sqlite3.Error as e:
         print(f"Database error: {e}")
@@ -621,6 +662,26 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Optional[Chat]:
     finally:
         if 'conn' in locals():
             conn.close()
+
+def check_connection() -> Tuple[bool, str]:
+    """Check if the WhatsApp bridge is running and connected"""
+    try:
+        response = requests.get(f"{WHATSAPP_API_BASE_URL}/health", timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            status = data.get('status', 'unknown')
+            if status == 'connected':
+                return True, "WhatsApp bridge is connected"
+            else:
+                return False, f"WhatsApp bridge is {status}"
+        else:
+            return False, f"Bridge health check failed: HTTP {response.status_code}"
+    except requests.exceptions.Timeout:
+        return False, "Bridge is not responding (timeout)"
+    except requests.exceptions.ConnectionError:
+        return False, "Cannot connect to WhatsApp bridge - is it running?"
+    except Exception as e:
+        return False, f"Connection check failed: {str(e)}"
 
 def send_message(recipient: str, message: str) -> Tuple[bool, str]:
     try:

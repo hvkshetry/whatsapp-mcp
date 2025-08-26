@@ -1,0 +1,24 @@
+{
+  "name": "whatsapp-mcp",
+  "version": "1.0.0",
+  "description": "WhatsApp MCP Server - Headless wrapper for Go bridge and Python MCP server",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "check-session": "node check-session.js",
+    "setup": "cd whatsapp-bridge && go run main.go"
+  },
+  "keywords": [
+    "whatsapp",
+    "mcp",
+    "model-context-protocol",
+    "headless"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
